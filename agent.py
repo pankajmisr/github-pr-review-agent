@@ -218,18 +218,15 @@ def review_pull_request(
         # Create the agent
         agent = create_pr_review_agent()
         
-        # Create a runner with app_name parameter
-        runner = Runner(agent=agent, session_service=session_service, app_name=APP_NAME)
-        
         # Generate session ID if not provided
         if not session_id:
             session_id = f"pr_{repo_owner}_{repo_name}_{pr_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         
+        # Create a runner with app_name parameter
+        runner = Runner(agent=agent, session_service=session_service, app_name=APP_NAME)
+        
         # Start the review process
         initial_message = f"Please review the pull request #{pr_number} from the repository {repo_owner}/{repo_name}."
-        
-        # Create a session
-        session = session_service.get_or_create_session(APP_NAME, user_id, session_id)
         
         # Run the agent with the initial message using the correct parameters
         for event in runner.start_chat(
