@@ -10,9 +10,10 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
 
-from google.adk.agents import Agent
+from google.adk.agents import Agent  
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
+import google.genai as genai
 
 # Import GitHub tools
 from github_tools import (
@@ -34,11 +35,16 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 if not GITHUB_TOKEN:
     raise ValueError("GITHUB_TOKEN environment variable is not set")
 
+# Google API key
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+if GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
+
 # ADK model configuration
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-pro")
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-pro")
 
 # App name for the ADK runner
-APP_NAME = "github-pr-review-agent"
+APP_NAME = "github_pr_review_agent"
 
 # Create session service for managing conversation state
 session_service = InMemorySessionService()
@@ -201,8 +207,7 @@ def review_pull_request(
     repo_owner: str, 
     repo_name: str, 
     pr_number: int,
-    user_id: str = "user1",
-    session_id: Optional[str] = None
+    user_id: str = "user1"
 ) -> None:
     """
     Reviews a GitHub pull request using the PR review agent.
@@ -212,30 +217,25 @@ def review_pull_request(
         repo_name (str): Repository name
         pr_number (int): Pull request number
         user_id (str): User ID for the session
-        session_id (str, optional): Session ID for conversation state
     """
     try:
         # Create the agent
         agent = create_pr_review_agent()
         
-        # Generate session ID if not provided
-        if not session_id:
-            session_id = f"pr_{repo_owner}_{repo_name}_{pr_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        # Create a session ID
+        session_id = f"pr_{repo_owner}_{repo_name}_{pr_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         
-        # Create a runner with app_name parameter
-        runner = Runner(agent=agent, session_service=session_service, app_name=APP_NAME)
+        # Create a runner with app_name parameter - simplest form
+        runner = Runner(agent=agent, app_name=APP_NAME)
         
         # Start the review process
         initial_message = f"Please review the pull request #{pr_number} from the repository {repo_owner}/{repo_name}."
         
-        # Use the run method instead of run_async for simplicity
-        response = runner.run(
-            user_id=user_id,
-            session_id=session_id,
-            message=initial_message
-        )
+        # Run the agent with simplified call
+        logger.info(f"Starting review of PR #{pr_number} in {repo_owner}/{repo_name}")
+        response = runner.run(initial_message)
         
-        logger.info(f"Agent response: {response.text if hasattr(response, 'text') else response}")
+        logger.info(f"Agent response: {response}")
         logger.info(f"PR review completed for {repo_owner}/{repo_name}#{pr_number}")
     
     except Exception as e:
