@@ -37,6 +37,9 @@ if not GITHUB_TOKEN:
 # ADK model configuration
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-pro")
 
+# App name for the ADK runner
+APP_NAME = "github-pr-review-agent"
+
 # Create session service for managing conversation state
 session_service = InMemorySessionService()
 
@@ -215,8 +218,8 @@ def review_pull_request(
         # Create the agent
         agent = create_pr_review_agent()
         
-        # Create a runner
-        runner = Runner(agent=agent, session_service=session_service)
+        # Create a runner with app_name parameter
+        runner = Runner(agent=agent, session_service=session_service, app_name=APP_NAME)
         
         # Generate session ID if not provided
         if not session_id:
@@ -225,11 +228,14 @@ def review_pull_request(
         # Start the review process
         initial_message = f"Please review the pull request #{pr_number} from the repository {repo_owner}/{repo_name}."
         
-        # Run the agent with the initial message
-        for event in runner.run_async(
+        # Create a session
+        session = session_service.get_or_create_session(APP_NAME, user_id, session_id)
+        
+        # Run the agent with the initial message using the correct parameters
+        for event in runner.start_chat(
             user_id=user_id,
             session_id=session_id,
-            message=initial_message
+            user_message=initial_message
         ):
             # Process and log events from the agent
             if hasattr(event, 'content') and hasattr(event.content, 'parts'):
