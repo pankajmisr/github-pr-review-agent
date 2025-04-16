@@ -6,14 +6,16 @@ Main implementation of the GitHub PR Review Agent using Google's Agent Developme
 
 import os
 import logging
+import asyncio
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
 
-from google.adk.agents import Agent  
+from google.adk.agents import Agent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 import google.genai as genai
+from google.genai import types
 
 # Import GitHub tools
 from github_tools import (
@@ -45,6 +47,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-pro")
 
 # App name for the ADK runner
 APP_NAME = "github_pr_review_agent"
+USER_ID = "user_1"
 
 # Create session service for managing conversation state
 session_service = InMemorySessionService()
@@ -52,7 +55,6 @@ session_service = InMemorySessionService()
 def analyze_code_changes(pr_files: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Analyzes code changes in a pull request and provides feedback.
-    This tool is used by the agent to process and analyze files changed in a PR.
     
     Args:
         pr_files (list): List of files changed in the pull request
@@ -60,6 +62,9 @@ def analyze_code_changes(pr_files: List[Dict[str, Any]]) -> Dict[str, Any]:
     Returns:
         dict: Analysis results with suggestions and concerns
     """
+    # Log tool execution for debugging
+    print(f"--- Tool: analyze_code_changes called with {len(pr_files)} files ---")
+    
     # Extract basic statistics
     stats = {
         "total_files": len(pr_files),
@@ -110,6 +115,9 @@ def generate_review_from_analysis(analysis_result: Dict[str, Any]) -> Dict[str, 
     Returns:
         dict: Generated review with summary and comments
     """
+    # Log tool execution for debugging
+    print(f"--- Tool: generate_review_from_analysis called ---")
+    
     # This function will be called by the LLM through tool use
     # The actual review generation will be done by the LLM
     return {
@@ -136,6 +144,9 @@ def format_review_for_submission(
     Returns:
         dict: Formatted review data ready for submission
     """
+    # Log tool execution for debugging
+    print(f"--- Tool: format_review_for_submission called ---")
+    
     # This will be used to format the review data from the LLM into the format
     # expected by the GitHub API
     return {
@@ -170,24 +181,20 @@ def create_pr_review_agent() -> Agent:
     agent = Agent(
         model=MODEL_NAME,
         name="github_pr_review_agent",
+        description="Provides code review and feedback for GitHub pull requests.",
         instruction="""
         You are a GitHub Pull Request Review Assistant that helps developers by reviewing code changes.
         Your goal is to provide constructive feedback and identify potential issues in the code.
         
         When reviewing code:
-        1. Analyze the changes for potential bugs, security issues, or performance problems
-        2. Check for adherence to best practices and coding standards
-        3. Look for opportunities to improve code quality, readability, and maintainability
-        4. Provide clear explanations of issues found and suggest improvements
-        5. Be respectful and constructive in your feedback
+        1. Use the get_pr_details tool to get information about the PR
+        2. Use the get_pr_files tool to get the files changed in the PR
+        3. Use the analyze_code_changes tool to process and analyze the files
+        4. Use the generate_review_from_analysis tool to create a structured review
+        5. Use the format_review_for_submission tool to prepare the review for GitHub
+        6. Use the submit_pr_review or add_pr_comment tool to send feedback to GitHub
         
-        Your review process:
-        1. Get the PR details using get_pr_details
-        2. Get the files changed using get_pr_files
-        3. Analyze the code changes using analyze_code_changes
-        4. Generate a review with feedback using generate_review_from_analysis
-        5. Format the review for submission using format_review_for_submission
-        6. Submit the review using submit_pr_review or add_pr_comment
+        Analyze the response from each tool before proceeding to the next step.
         
         Your review should categorize issues as:
         - Critical: Issues that will cause errors or security vulnerabilities
@@ -203,11 +210,11 @@ def create_pr_review_agent() -> Agent:
     
     return agent
 
-def review_pull_request(
+async def review_pull_request(
     repo_owner: str, 
     repo_name: str, 
     pr_number: int,
-    user_id: str = "user1"
+    user_id: str = USER_ID,
 ) -> None:
     """
     Reviews a GitHub pull request using the PR review agent.
@@ -225,22 +232,53 @@ def review_pull_request(
         # Create a session ID
         session_id = f"pr_{repo_owner}_{repo_name}_{pr_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         
-        # Create a runner with app_name parameter - simplest form
-        runner = Runner(agent=agent, app_name=APP_NAME)
+        # Create a session
+        session = session_service.create_session(
+            app_name=APP_NAME,
+            user_id=user_id,
+            session_id=session_id
+        )
+        
+        # Create a runner
+        runner = Runner(
+            agent=agent,
+            app_name=APP_NAME,
+            session_service=session_service
+        )
         
         # Start the review process
         initial_message = f"Please review the pull request #{pr_number} from the repository {repo_owner}/{repo_name}."
         
-        # Run the agent with simplified call
-        logger.info(f"Starting review of PR #{pr_number} in {repo_owner}/{repo_name}")
-        response = runner.run(initial_message)
+        # Prepare the user's message in ADK format
+        content = types.Content(role='user', parts=[types.Part(text=initial_message)])
         
-        logger.info(f"Agent response: {response}")
+        logger.info(f"Starting review of PR #{pr_number} in {repo_owner}/{repo_name}")
+        
+        # Run the agent asynchronously
+        final_response_text = "Agent did not produce a final response."
+        
+        async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=content):
+            # Log event
+            logger.info(f"Event: {event.author}, Type: {type(event).__name__}, Final: {event.is_final_response()}")
+            
+            # Check for final response
+            if event.is_final_response():
+                if event.content and event.content.parts:
+                    final_response_text = event.content.parts[0].text
+                elif event.actions and event.actions.escalate:
+                    final_response_text = f"Agent escalated: {event.error_message or 'No specific message.'}"
+                break
+        
+        logger.info(f"Agent response: {final_response_text}")
         logger.info(f"PR review completed for {repo_owner}/{repo_name}#{pr_number}")
     
     except Exception as e:
         logger.error(f"Error reviewing PR: {e}")
         raise
+
+def main_sync(repo_owner: str, repo_name: str, pr_number: int):
+    """Synchronous wrapper for the async review function"""
+    asyncio.run(review_pull_request(repo_owner, repo_name, pr_number))
 
 if __name__ == "__main__":
     import argparse
@@ -253,4 +291,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Run the PR review
-    review_pull_request(args.owner, args.repo, args.pr)
+    main_sync(args.owner, args.repo, args.pr)
