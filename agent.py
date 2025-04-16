@@ -2,6 +2,7 @@
 
 """
 Main implementation of the GitHub PR Review Agent using Google's Agent Development Kit (ADK).
+Simplified version for compatibility with ADK 0.1.0.
 """
 
 import os
@@ -14,7 +15,6 @@ from dotenv import load_dotenv
 from google.adk.agents import Agent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-from google.genai import types
 
 # Import GitHub tools
 from github_tools import (
@@ -42,7 +42,7 @@ if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY environment variable is not set")
 
 # ADK model configuration - use a model that you know exists in your version
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-pro")
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-1.0-pro")
 
 # App name for the ADK runner
 APP_NAME = "github_pr_review_agent"
@@ -61,9 +61,6 @@ def analyze_code_changes(pr_files: List[Dict[str, Any]]) -> Dict[str, Any]:
     Returns:
         dict: Analysis results with suggestions and concerns
     """
-    # Log tool execution for debugging
-    print(f"--- Tool: analyze_code_changes called with {len(pr_files)} files ---")
-    
     # Extract basic statistics
     stats = {
         "total_files": len(pr_files),
@@ -114,11 +111,6 @@ def generate_review_from_analysis(analysis_result: Dict[str, Any]) -> Dict[str, 
     Returns:
         dict: Generated review with summary and comments
     """
-    # Log tool execution for debugging
-    print(f"--- Tool: generate_review_from_analysis called ---")
-    
-    # This function will be called by the LLM through tool use
-    # The actual review generation will be done by the LLM
     return {
         "analysis_received": True,
         "stats": analysis_result.get("stats", {}),
@@ -143,11 +135,6 @@ def format_review_for_submission(
     Returns:
         dict: Formatted review data ready for submission
     """
-    # Log tool execution for debugging
-    print(f"--- Tool: format_review_for_submission called ---")
-    
-    # This will be used to format the review data from the LLM into the format
-    # expected by the GitHub API
     return {
         "ready_for_submission": True,
         "repo_owner": repo_owner,
@@ -193,27 +180,28 @@ def create_pr_review_agent() -> Agent:
         5. Use the format_review_for_submission tool to prepare the review for GitHub
         6. Use the submit_pr_review or add_pr_comment tool to send feedback to GitHub
         
-        Analyze the response from each tool before proceeding to the next step.
-        
         Your review should categorize issues as:
         - Critical: Issues that will cause errors or security vulnerabilities
         - High: Issues that should be fixed before merging
         - Medium: Recommendations that would improve code quality
         - Low: Minor suggestions or style improvements
         
-        Your tone should be professional, helpful, and educational. Always explain why something 
-        is an issue and how it can be improved, not just that it's wrong.
+        Your tone should be professional, helpful, and educational.
         """,
         tools=tools
     )
     
     return agent
 
-async def review_pull_request(
+class InvocationContext:
+    """Simple class to mimic the expected context structure"""
+    def __init__(self, message):
+        self.message = message
+
+def review_pull_request(
     repo_owner: str, 
     repo_name: str, 
     pr_number: int,
-    user_id: str = USER_ID,
 ) -> None:
     """
     Reviews a GitHub pull request using the PR review agent.
@@ -222,85 +210,92 @@ async def review_pull_request(
         repo_owner (str): Repository owner
         repo_name (str): Repository name
         pr_number (int): Pull request number
-        user_id (str): User ID for the session
     """
     try:
         # Create the agent
         agent = create_pr_review_agent()
+        logger.info(f"Created agent '{agent.name}' with model '{MODEL_NAME}'")
         
         # Create a session ID
         session_id = f"pr_{repo_owner}_{repo_name}_{pr_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         
-        # Create a session
+        # Create session
         session = session_service.create_session(
             app_name=APP_NAME,
-            user_id=user_id,
+            user_id=USER_ID,
             session_id=session_id
         )
+        logger.info(f"Created session with ID: {session_id}")
         
-        # Create a runner
+        # Create a minimal runner
         runner = Runner(
             agent=agent,
             app_name=APP_NAME,
             session_service=session_service
         )
+        logger.info(f"Created runner for agent '{runner.agent.name}'")
         
-        # Start the review process
-        initial_message = f"Please review the pull request #{pr_number} from the repository {repo_owner}/{repo_name}."
+        # Define the message for the agent
+        initial_message = f"Please review pull request #{pr_number} from {repo_owner}/{repo_name}."
+        logger.info(f"Starting review with message: '{initial_message}'")
         
-        # Prepare the user's message in ADK format
-        content = types.Content(role='user', parts=[types.Part(text=initial_message)])
-        
-        logger.info(f"Starting review of PR #{pr_number} in {repo_owner}/{repo_name}")
-        
-        # Run the agent asynchronously
-        final_response_text = "Agent did not produce a final response."
-        
-        # Try different parameter structures if one doesn't work
+        # Use a very simple approach - just try to run the agent
         try:
-            logger.info("Trying run_async with new_message parameter")
-            async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=content):
-                handle_event(event, final_response_text)
+            # Try with minimal invocation
+            from google.adk.invocation_context import InvocationContext
+            context = InvocationContext(
+                agent=agent,
+                user_id=USER_ID,
+                session_id=session_id,
+                app_name=APP_NAME
+            )
+            context.message = initial_message
+            
+            logger.info("Running the agent...")
+            agent.run(context)
+            logger.info("Agent execution completed.")
+            
+            logger.info(f"PR review completed for {repo_owner}/{repo_name}#{pr_number}")
         except Exception as e:
-            logger.error(f"First approach failed: {e}")
+            logger.error(f"Error running agent: {e}")
+            logger.info("Trying a different approach...")
+            
+            # If direct execution fails, try using CLI instead
+            from subprocess import Popen, PIPE
+            import tempfile
+            import json
+            
+            # Create a minimal agent file
+            with tempfile.NamedTemporaryFile(suffix='.py', mode='w', delete=False) as f:
+                f.write(f"""
+# Simple agent for PR review
+from google.adk.agents import Agent
+from github_tools import get_pr_details, get_pr_files, add_pr_comment
+
+agent = Agent(
+    model="{MODEL_NAME}",
+    name="github_pr_review_agent",
+    instruction="You are a GitHub Pull Request Review Assistant. Review PR #{pr_number} from {repo_owner}/{repo_name}.",
+    tools=[get_pr_details, get_pr_files, add_pr_comment]
+)
+                """)
+                agent_file = f.name
+            
+            logger.info(f"Created temporary agent file: {agent_file}")
+            logger.info("Running agent with ADK CLI...")
+            
             try:
-                logger.info("Trying run_async with message parameter")
-                async for event in runner.run_async(user_id=user_id, session_id=session_id, message=initial_message):
-                    handle_event(event, final_response_text)
+                process = Popen(['adk', 'run', agent_file], stdout=PIPE, stderr=PIPE)
+                stdout, stderr = process.communicate()
+                logger.info(f"ADK CLI output: {stdout.decode()}")
+                if stderr:
+                    logger.error(f"ADK CLI error: {stderr.decode()}")
             except Exception as e:
-                logger.error(f"Second approach failed: {e}")
-                try:
-                    logger.info("Trying run_async with content parameter")
-                    async for event in runner.run_async(user_id=user_id, session_id=session_id, content=content):
-                        handle_event(event, final_response_text)
-                except Exception as e:
-                    logger.error(f"Third approach failed: {e}")
-                    logger.info("Falling back to synchronous run method")
-                    response = runner.run(message=initial_message)
-                    final_response_text = response.text if hasattr(response, 'text') else str(response)
-        
-        logger.info(f"Agent response: {final_response_text}")
-        logger.info(f"PR review completed for {repo_owner}/{repo_name}#{pr_number}")
+                logger.error(f"Error running ADK CLI: {e}")
     
     except Exception as e:
-        logger.error(f"Error reviewing PR: {e}")
+        logger.error(f"Error in review process: {e}")
         raise
-
-def handle_event(event, final_response_text):
-    """Helper function to process events from the agent"""
-    # Log event
-    logger.info(f"Event: {event.author}, Type: {type(event).__name__}, Final: {event.is_final_response()}")
-    
-    # Check for final response
-    if event.is_final_response():
-        if event.content and event.content.parts:
-            final_response_text = event.content.parts[0].text
-        elif event.actions and event.actions.escalate:
-            final_response_text = f"Agent escalated: {event.error_message or 'No specific message.'}"
-
-def main_sync(repo_owner: str, repo_name: str, pr_number: int):
-    """Synchronous wrapper for the async review function"""
-    asyncio.run(review_pull_request(repo_owner, repo_name, pr_number))
 
 if __name__ == "__main__":
     import argparse
@@ -313,4 +308,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Run the PR review
-    main_sync(args.owner, args.repo, args.pr)
+    review_pull_request(args.owner, args.repo, args.pr)
