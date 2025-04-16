@@ -228,11 +228,19 @@ def review_pull_request(
         # Start the review process
         initial_message = f"Please review the pull request #{pr_number} from the repository {repo_owner}/{repo_name}."
         
-        # Run the agent with the initial message using the correct parameters
-        for event in runner.start_chat(
+        # Use run_async method with correct parameters
+        # Based on the ADK Entries docs, we need to pass the content as part of the Event
+        from google.genai import types
+        content = types.Content(
+            parts=[types.Part(text=initial_message)],
+            role="user"
+        )
+        
+        # Run the agent with the initial message
+        for event in runner.run_async(
             user_id=user_id,
             session_id=session_id,
-            user_message=initial_message
+            content=content
         ):
             # Process and log events from the agent
             if hasattr(event, 'content') and hasattr(event.content, 'parts'):
