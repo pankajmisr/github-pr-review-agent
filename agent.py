@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 from google.adk.agents import Agent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-import google.genai as genai
 from google.genai import types
 
 # Import GitHub tools
@@ -39,10 +38,10 @@ if not GITHUB_TOKEN:
 
 # Google API key
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-if GOOGLE_API_KEY:
-    genai.configure(api_key=GOOGLE_API_KEY)
+if not GOOGLE_API_KEY:
+    raise ValueError("GOOGLE_API_KEY environment variable is not set")
 
-# ADK model configuration
+# ADK model configuration - use a model that you know exists in your version
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-pro")
 
 # App name for the ADK runner
@@ -257,17 +256,28 @@ async def review_pull_request(
         # Run the agent asynchronously
         final_response_text = "Agent did not produce a final response."
         
-        async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=content):
-            # Log event
-            logger.info(f"Event: {event.author}, Type: {type(event).__name__}, Final: {event.is_final_response()}")
-            
-            # Check for final response
-            if event.is_final_response():
-                if event.content and event.content.parts:
-                    final_response_text = event.content.parts[0].text
-                elif event.actions and event.actions.escalate:
-                    final_response_text = f"Agent escalated: {event.error_message or 'No specific message.'}"
-                break
+        # Try different parameter structures if one doesn't work
+        try:
+            logger.info("Trying run_async with new_message parameter")
+            async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=content):
+                handle_event(event, final_response_text)
+        except Exception as e:
+            logger.error(f"First approach failed: {e}")
+            try:
+                logger.info("Trying run_async with message parameter")
+                async for event in runner.run_async(user_id=user_id, session_id=session_id, message=initial_message):
+                    handle_event(event, final_response_text)
+            except Exception as e:
+                logger.error(f"Second approach failed: {e}")
+                try:
+                    logger.info("Trying run_async with content parameter")
+                    async for event in runner.run_async(user_id=user_id, session_id=session_id, content=content):
+                        handle_event(event, final_response_text)
+                except Exception as e:
+                    logger.error(f"Third approach failed: {e}")
+                    logger.info("Falling back to synchronous run method")
+                    response = runner.run(message=initial_message)
+                    final_response_text = response.text if hasattr(response, 'text') else str(response)
         
         logger.info(f"Agent response: {final_response_text}")
         logger.info(f"PR review completed for {repo_owner}/{repo_name}#{pr_number}")
@@ -275,6 +285,18 @@ async def review_pull_request(
     except Exception as e:
         logger.error(f"Error reviewing PR: {e}")
         raise
+
+def handle_event(event, final_response_text):
+    """Helper function to process events from the agent"""
+    # Log event
+    logger.info(f"Event: {event.author}, Type: {type(event).__name__}, Final: {event.is_final_response()}")
+    
+    # Check for final response
+    if event.is_final_response():
+        if event.content and event.content.parts:
+            final_response_text = event.content.parts[0].text
+        elif event.actions and event.actions.escalate:
+            final_response_text = f"Agent escalated: {event.error_message or 'No specific message.'}"
 
 def main_sync(repo_owner: str, repo_name: str, pr_number: int):
     """Synchronous wrapper for the async review function"""
